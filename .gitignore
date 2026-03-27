@@ -1,0 +1,12 @@
+# Chaves e Configs
+api_key.py
+.env
+
+# Áudios temporários da Zaíra
+fala_*.mp3
+last_audio.txt
+
+# Pastas de ambiente virtual e cache
+__pycache__/
+venv/
+.vscode/
