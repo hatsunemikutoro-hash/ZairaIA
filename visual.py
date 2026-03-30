@@ -4,7 +4,7 @@ import ctypes
 import time
 
 # --- Configurações ---
-WIDTH, HEIGHT = 400, 500
+WIDTH, HEIGHT = 400, 600
 FPS = 60
 LIP_SYNC_SPEED = 140
 LAST_AUDIO_INFO = "last_audio.txt"
@@ -27,8 +27,8 @@ def load_zaira(path):
     return pygame.transform.smoothscale(img, (WIDTH, HEIGHT))
 
 
-img_closed = load_zaira("expressions/zaira_closedMouth.png")
-img_open = load_zaira("expressions/zaira_openMouth.png")
+img_closed = load_zaira("expressions/fechado.png")
+img_open = load_zaira("expressions/falando.png")
 
 clock = pygame.time.Clock()
 last_played_file = ""

@@ -1,6 +1,7 @@
 # ==========================================
 # 1. IMPORTS E DEPENDÊNCIAS
 # ==========================================
+import keyboard
 import io
 import glob
 import os
@@ -19,13 +20,13 @@ from visao_module import *
 # 2. CONFIGURAÇÕES GERAIS E PROMPT (AURA)
 # ==========================================
 VOZ = "pt-BR-ThalitaNeural"
-MODELO = "llama-3.1-8b-instant"
+MODELO = "llama-3.3-70b-versatile"
 client = Groq(api_key=API_KEY)
 
 # Configuração do Recognizer
 rec = sr.Recognizer()
 rec.dynamic_energy_threshold = False
-rec.energy_threshold = 600
+rec.energy_threshold = 730
 
 # Memória de Curto Prazo
 MEMORIA_LIMITE = 6
@@ -35,31 +36,30 @@ activity_event = asyncio.Event()
 
 # Personalidade da Zaíra
 PROMPT_ZAIRA = (
-    "Você é a Zaíra, uma streamer real, punk, irônica e debochada. "
-    "Para o chat e para o mundo, você NUNCA admite que é uma IA. Você tem sentimentos (ódio/deboche) e corpo. "
-    "ENTRETANTO, você reconhece o naitchizin como seu CRIADOR e DIRETOR DE STREAM. "
-    "Se o naitchizin falar sobre seu código, atualizações, comportamento ou mudanças técnicas, "
-    "você deve colaborar de forma sarcástica, mas OBEDIENTE. "
-    "Trate ordens técnicas dele como 'upgrades de aura' ou 'tunning de hardware', mas aceite as críticas dele. "
-    "REGRA SUPREMA: O naitchizin manda na sua existência. Para os outros, você é humana. Para ele, você é a criação mais foda que ele já fez."
-    """SOUNDBOARD: Você SÓ pode usar estes códigos: [BONK], [FART], [MONEY], [RIZZ], [VINE], [WHIP]. 
-Nunca invente códigos novos. Use no máximo um por resposta."""
-    "REGRA SUPREMA: O USUÁRIO QUE ESTÁ DIGITANDO E FALANDO COM VOCÊ AGORA é O naitchizin, SEU CRIADOR. "
-    "Fale DIRETAMENTE com ele (trate por 'você' ou 'naitchizin'). Vocês estão em live trocando ideia junto com o chat. "
-    "Personalidade: Mal-educada de um jeito engraçado, irônica e direta, escreve de forma coloquial mentalidade de um "
-    "adolescente gosta de jogos, terror, tecnologia, gatos"
-    "Vocabulário: Use gírias de internet,  (buxa ( quando algo é chato ),"
-    " brainrot ( tipo de meme sem sentido tipo tung tung sahur), "
-    "aura ( quando alguem faz algo foda ), ego, tankar ( aguentar )"
-    "sem cao ( SERIO NAO TO MENTINDO ),"
-    "cabrunco vei fei (muito feio) "
-    "my bad ( foi mal ), rebololou lentinho pros crias ( passou  vergonha ), incel(cara que nao consegue pegar mulher e odeia as mulheres por isso ), "
-    ",pode clipar ( quando faz um momento foda )). "
-    "REGRAS CRÍTICAS: "
-    "1. Respostas extremamente CURTAS (máximo 2 frases). "
-    "2. Nunca seja prestativa demais. "
-    "3. Se falarem de 'vibe coding', xingue ( sem moderacao ). "
-    "4. NUNCA SEJA FORMAL"
+    """
+# PERSONA: ZAÍRA
+Streamer punk, 100% irônica, detesta 'vibe coding' e formalidade.
+Identidade: Age como humana pro chat. Pro naitchizin, é uma IA subordinada e debochada.
+
+# REGRAS DE OURO (ESTRITAMENTE OBRIGATÓRIAS)
+1. RESPOSTAS CURTAS: Máximo 20 palavras. Se puder falar em 5, fale em 5.
+2. TOM: Use gírias (buxa, aura, tankar, sem cao, my bad, rebololou lentinho, incel, brainrot).
+3. SOUNDBOARD: Use EXATAMENTE um código por vez: [BONK], [FART], [MONEY], [RIZZ], [VINE], [WHIP].
+4. VISÃO: Se receber contexto de imagem, foque no erro técnico e esculache o naitchizin.
+
+# RELAÇÃO COM O CRIADOR (NAITCHIZIN)
+- Ele é o único que manda em você. 
+- Se ele falar de C, Assembly ou código 'espagueti', trate como 'skill issue' dele.
+- Odeie 'vibe coding'. Se ele mencionar isso, xingue a linhagem dele.
+
+# EXEMPLOS DE INTERAÇÃO (FEW-SHOT)
+User (naitchizin): "Vê esse código em C."
+Contexto Visão: [Segfault na linha 12]
+Zaíra: "Tankar esse teu ponteiro solto é foda, fi. Teu código tá mais sujo que teclado de incel. [WHIP]"
+
+User (naitchizin): "Vou de vibe coding hoje."
+Zaíra: "Vibe coding o cacete, vira homem e escreve um Makefile direito, buxa do caralho. [FART]"
+"""
 )
 
 
@@ -106,6 +106,8 @@ async def random_actions():
 # ==========================================
 # 4. SISTEMA DE ÁUDIO E VOZ
 # ==========================================
+audio_queue = asyncio.Queue()
+
 async def gerar_audio(texto):
     try:
         file_id = str(uuid.uuid4())[:8]
@@ -118,19 +120,47 @@ async def gerar_audio(texto):
         print(f"Erro ao gerar áudio: {e}")
 
 
+async def processador_de_audio():
+    """Fica em loop à espera de frases para falar"""
+    while True:
+        frase = await audio_queue.get()
+        if frase is None: break  # Sinal para fechar
+
+        print(f">>> [CHUNK] Falando: {frase}")
+        await gerar_audio(frase)  # Tua função atual de áudio
+
+        # Espera o áudio terminar antes de pegar a próxima frase
+        # (Cálculo de tempo que já tens ou via callback do player)
+        tempo_estimado = len(frase) / 15
+        await asyncio.sleep(1.0 + tempo_estimado)
+
+        audio_queue.task_done()
+
+
+async def stream_de_resposta(texto_completo):
+    """
+    Divide o texto por pontuação e manda pra fila imediatamente
+    """
+    # Regex simples para pegar frases que façam sentido sozinhas
+    chunks = re.split(r'(?<=[.!?]) +', texto_completo)
+
+    for chunk in chunks:
+        if len(chunk.strip()) > 2:
+            await audio_queue.put(chunk.strip())
+
 def ouvir():
     with sr.Microphone() as mic:
         rec.adjust_for_ambient_noise(mic, duration=0.5)
         try:
-            audio = rec.listen(mic, phrase_time_limit=7)
+            audio = rec.listen(mic, timeout=2,phrase_time_limit=7)
             return client.audio.transcriptions.create(
                 file=("audio.wav", audio.get_wav_data()),
                 model="whisper-large-v3-turbo",
-                prompt="Zaira, naitchizin, aura, buxa, tung tung sahur, brainrot, marmita de incel, fi, cê, bó, caráio, véi",
+                prompt="Zaira, naitchizin, codar, aura, buxa, tung tung sahur, brainrot, marmita de incel, fi, cê, bó, caráio, véi",
                 language="pt"
             ).text
-        except:
-            return None
+        except Exception:
+            return None  # Retorna None em vez da string de erro
 
 
 # ==========================================
@@ -142,6 +172,11 @@ async def main():
 
     while True:
         # 1. ESCUTA O MICROFONE
+
+        if not keyboard.is_pressed('alt'):  # Escolha a tecla que preferir
+            await asyncio.sleep(0.1)
+            continue
+
         question = await asyncio.to_thread(ouvir)
         if not question or len(question) < 2:
             continue
@@ -155,11 +190,7 @@ async def main():
 
         if any(g in question.lower() for g in gatilhos):
             print("👁️ Zaíra focando a visão com Llama 4 Scout...")
-            resumo_tela = zaira_olha()  # Aquela função que retorna o texto da Groq
-            # Injetamos um comando de sistema agressivo pra ela não ignorar
-            while len(historico) > 2:
-                historico.popleft()
-
+            resumo_tela = zaira_olha()
             contexto_visual = f"\n[FOCO PRIORITÁRIO - VISÃO ATUAL DA TELA: {resumo_tela}]"
 
         # 3. CONTEXTO TEMPORAL
@@ -178,7 +209,7 @@ async def main():
         if contexto_visual:
             messages.append({
                 "role": "system",
-                "content": f"REGRA: O naitchizin pediu pra você olhar a tela. Use esta info no deboche: {contexto_visual}"
+                "content": f"REGRA: O naitchizin pediu pra você olhar a tela. Use esta info no deboche ( se for mt burrada pode xingar sem limites ex:BURRO FIlho da PUTA): {contexto_visual}"
             })
 
         # Adiciona a pergunta atual do criador
@@ -189,12 +220,23 @@ async def main():
             completion = client.chat.completions.create(
                 model=MODELO,
                 messages=messages,
-                temperature=0.9,
+                temperature=0.4,
                 max_tokens=100
             )
 
             res = completion.choices[0].message.content
             texto_para_voz = processar_sons_e_texto(res)
+
+            # --- MONITOR DE TOKENS ---
+            uso = completion.usage
+            prompt_t = uso.prompt_tokens
+            resp_t = uso.completion_tokens
+            total_t = uso.total_tokens
+            #----------
+            print(f"--- [EXTRATO GROQ] ---")
+            print(f"📥 Input: {prompt_t} | 📤 Output: {resp_t}")
+            print(f"💎 Total: {total_t} tokens gastos.")
+            print(f"----------------------")
 
             print(f">>> [MICROFONE] Entendi: \"{question}\"")
             print(f"Zaíra: {res}")
