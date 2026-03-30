@@ -108,16 +108,48 @@ async def random_actions():
 # ==========================================
 audio_queue = asyncio.Queue()
 
-async def gerar_audio(texto):
+
+async def worker_de_voz():
+    """Consome a fila e garante a ordem das falas"""
+    while True:
+        arquivo_mp3 = await audio_queue.get()
+        try:
+            # Notifica o visualizer/player trocando o nome no arquivo de gatilho
+            with open("last_audio.txt", "w") as f:
+                f.write(arquivo_mp3)
+
+            # Delay de segurança baseado no tamanho do arquivo ou fixo
+            # Se o seu player apaga o txt ao terminar, dá pra otimizar aqui
+            await asyncio.sleep(1.5)
+        finally:
+            audio_queue.task_done()
+
+async def gerar_audio_clean(texto):
+    """Gera o MP3 e retorna o nome do arquivo"""
+    if not texto.strip(): return None
     try:
         file_id = str(uuid.uuid4())[:8]
         temp_file = f"fala_{file_id}.mp3"
         communicate = edge_tts.Communicate(texto, VOZ, rate="+15%")
         await communicate.save(temp_file)
+        return temp_file
+    except Exception as e:
+        print(f"❌ Erro TTS: {e}")
+        return None
+
+async def gerar_audio(texto):
+    if not texto.strip(): return
+    try:
+        file_id = str(uuid.uuid4())[:8]
+        temp_file = f"fala_{file_id}.mp3"
+        communicate = edge_tts.Communicate(texto, VOZ, rate="+15%")
+        await communicate.save(temp_file)
+
+        # Só escreve no last_audio.txt DEPOIS que o save terminar 100%
         with open("last_audio.txt", "w") as f:
             f.write(temp_file)
     except Exception as e:
-        print(f"Erro ao gerar áudio: {e}")
+        print(f"❌ Erro TTS: {e}")
 
 
 async def processador_de_audio():
@@ -168,12 +200,13 @@ def ouvir():
 # ==========================================
 async def main():
     print(">>> Zaíra On com Visão e Memória de Curto Prazo.")
+
+    # Inicia os workers em background
     asyncio.create_task(random_actions())
+    asyncio.create_task(worker_de_voz())
 
     while True:
-        # 1. ESCUTA O MICROFONE
-
-        if not keyboard.is_pressed('alt'):  # Escolha a tecla que preferir
+        if not keyboard.is_pressed('alt'):
             await asyncio.sleep(0.1)
             continue
 
@@ -181,88 +214,67 @@ async def main():
         if not question or len(question) < 2:
             continue
 
-        # --- MOMENTO 1: Você falou, reseta o tédio ---
         reset_activity()
 
-        # 2. SISTEMA DE GATILHO DE VISÃO
+        # Gatilho de Visão
         contexto_visual = ""
-        gatilhos = ["vê aí", "olha isso", "vê minha tela", "analisa", "tá vendo", "tem erro"]
-
-        if any(g in question.lower() for g in gatilhos):
-            print("👁️ Zaíra focando a visão com Llama 4 Scout...")
+        if any(g in question.lower() for g in ["vê aí", "olha isso", "analisa", "tem erro"]):
             resumo_tela = zaira_olha()
-            contexto_visual = f"\n[FOCO PRIORITÁRIO - VISÃO ATUAL DA TELA: {resumo_tela}]"
+            contexto_visual = f"\n[VISÃO ATUAL: {resumo_tela}]"
 
-        # 3. CONTEXTO TEMPORAL
         agora = datetime.now().strftime("%H:%M")
-        dia_semana = datetime.now().strftime("%A")
-
-        # 4. MONTAGEM DAS MENSAGENS (CÉREBRO)
-        # Começamos com a personalidade base
-        messages = [{"role": "system", "content": f"{PROMPT_ZAIRA}\n[Contexto: {agora} de {dia_semana}]"}]
-
-        # Adicionamos o histórico de conversa
+        messages = [{"role": "system", "content": f"{PROMPT_ZAIRA}\n[Hora: {agora}]"}]
         messages.extend(list(historico))
 
-        # SE TEVE VISÃO: Injetamos um System Prompt AGORA (logo antes da pergunta)
-        # Isso garante que o Llama 3.1 dê atenção total ao que ela viu
         if contexto_visual:
-            messages.append({
-                "role": "system",
-                "content": f"REGRA: O naitchizin pediu pra você olhar a tela. Use esta info no deboche ( se for mt burrada pode xingar sem limites ex:BURRO FIlho da PUTA): {contexto_visual}"
-            })
+            messages.append({"role": "system", "content": f"REGRA: Esculacha o erro técnico: {contexto_visual}"})
 
-        # Adiciona a pergunta atual do criador
         messages.append({"role": "user", "content": question})
 
         try:
-            # 5. CHAMADA DA GROQ (Llama 3.1 8B ou 70B)
             completion = client.chat.completions.create(
                 model=MODELO,
                 messages=messages,
                 temperature=0.4,
-                max_tokens=100
+                max_tokens=100,
+                stream=True
             )
 
-            res = completion.choices[0].message.content
-            texto_para_voz = processar_sons_e_texto(res)
-
-            # --- MONITOR DE TOKENS ---
-            uso = completion.usage
-            prompt_t = uso.prompt_tokens
-            resp_t = uso.completion_tokens
-            total_t = uso.total_tokens
-            #----------
-            print(f"--- [EXTRATO GROQ] ---")
-            print(f"📥 Input: {prompt_t} | 📤 Output: {resp_t}")
-            print(f"💎 Total: {total_t} tokens gastos.")
-            print(f"----------------------")
-
             print(f">>> [MICROFONE] Entendi: \"{question}\"")
-            print(f"Zaíra: {res}")
+            print("Zaíra: ", end="", flush=True)
 
-            # 6. ATUALIZA A MEMÓRIA
+            resposta_completa = ""
+            frase_acumulada = ""
+
+            for chunk in completion:
+                if chunk.choices and len(chunk.choices) > 0:
+                    token = chunk.choices[0].delta.content
+                    if token:
+                        print(token, end="", flush=True)
+                        resposta_completa += token
+                        frase_acumulada += token
+
+                        # Quando bater pontuação, gera o áudio e joga na fila
+                        if any(p in token for p in [".", "!", "?", ","]):
+                            if len(frase_acumulada.strip()) > 3:
+                                texto_limpo = processar_sons_e_texto(frase_acumulada)
+                                arquivo = await gerar_audio_clean(texto_limpo)
+                                if arquivo:
+                                    await audio_queue.put(arquivo)
+                                frase_acumulada = ""
+
+            # Fala o que sobrou (se houver)
+            if frase_acumulada.strip():
+                arquivo = await gerar_audio_clean(processar_sons_e_texto(frase_acumulada))
+                if arquivo:
+                    await audio_queue.put(arquivo)
+
             historico.append({"role": "user", "content": question})
-            historico.append({"role": "assistant", "content": res})
-
-            # 7. GERA E TOCA O ÁUDIO
-            # Garanta que sua função gerar_audio tenha o 'await asyncio.sleep(0.2)'
-            await gerar_audio(texto_para_voz)
-
-            # Espera ela terminar de falar + um cooldownzinho
-            tempo_estimado = len(texto_para_voz) / 15
-            await asyncio.sleep(1.0 + tempo_estimado)
-
-            # --- MOMENTO 2: Terminou de falar, reseta o tédio ---
-            reset_activity()
-
-            if os.path.exists("last_audio.txt"):
-                os.remove("last_audio.txt")
-
-            print(">>> [SISTEMA] Ouvido liberado.")
+            historico.append({"role": "assistant", "content": resposta_completa})
+            print("\n>>> [SISTEMA] Ouvido liberado.")
 
         except Exception as e:
-            print(f"❌ Erro no loop da Zaíra: {e}")
+            print(f"❌ Erro Crítico: {e}")
 
 
 if __name__ == "__main__":
