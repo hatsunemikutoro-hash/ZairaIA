@@ -36,10 +36,10 @@ def zaira_olha():
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
                 ]
             }],
-            max_tokens=60
+            max_tokens=150
         )
         return completion.choices[0].message.content
     except Exception as e:
-        return f"Erro na visão, naitchizin: {e}"
+        return f"Erro na visão, naitchizin ( relatar o erro ): {e}"
     finally:
         if os.path.exists(img_path): os.remove(img_path)
